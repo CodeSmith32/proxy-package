@@ -14,6 +14,7 @@ class ProxyManager {
   private $preg_newhost = null;
   private $ip = null;
   private $port = null;
+  private $logTime = '<unknown>';
 
   private $debug = false; // logs full request-response data sent to/from the true server
 
@@ -104,7 +105,7 @@ class ProxyManager {
     'www-authenticate',
     'x-frame-options',
   );
-  
+
   private $handled_mimes = array(
     'text/plain',
     'text/html',
@@ -191,7 +192,7 @@ class ProxyManager {
 
     // specify custom DNS
     curl_setopt($ch, CURLOPT_RESOLVE, array("{$this->oldhost}:{$this->port}:{$this->ip}"));
-    
+
     curl_setopt($ch, CURLOPT_ENCODING, '');
     curl_setopt($ch, CURLOPT_HEADER, true);
     curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
