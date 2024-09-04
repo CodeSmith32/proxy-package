@@ -2,7 +2,7 @@
 /**
   ProxyManager - matches what http://hosts.cx does
 
-  Version 2.2.1
+  Version 2.2.3
 
   Helpful resource: http://github.com/cowboy/php-simple-proxy/raw/master/ba-simple-proxy.php
 **/
@@ -10,8 +10,10 @@
 class ProxyManager {
   private $oldhost = null;
   private $preg_oldhost = null;
+  private $oldscheme = null;
   private $newhost = null;
   private $preg_newhost = null;
+  private $newscheme = null;
   private $ip = null;
   private $port = null;
   private $secure = null;
@@ -147,8 +149,10 @@ class ProxyManager {
     $port    = isset($params['port']) ? $params['port'] : 80;
     $secure  = isset($params['secure']) ? $params['secure'] : null;
     $debug   = !empty($params['debug']);
-    if(isset($params['handled_mimes']) && (is_array($params['handled_mimes']) || $params['handled_mimes'] === 'all'))
+
+    if(isset($params['handled_mimes']) && (is_array($params['handled_mimes']) || $params['handled_mimes'] === 'all')) {
       $this->handled_mimes = $params['handled_mimes'];
+    }
 
     if(preg_match('/[^\w\.-]/',$oldhost) === 1) {
       throw new Exception('Old host has invalid characters');
@@ -158,9 +162,11 @@ class ProxyManager {
     }
 
     $this->oldhost = $oldhost;
-    $this->preg_oldhost = '%'.preg_quote($oldhost,'%').'%i';
+    $this->preg_oldhost = '%(?:(https?)://)?'.preg_quote($oldhost,'%').'%i';
+    $this->oldscheme = $secure === null ? $_SERVER['REQUEST_SCHEME'] : ($secure === true ? 'https' : 'http');
     $this->newhost = $newhost;
-    $this->preg_newhost = '%'.preg_quote($newhost,'%').'%i';
+    $this->preg_newhost = '%(?:(https?)://)?'.preg_quote($newhost,'%').'%i';
+    $this->newscheme = $_SERVER['REQUEST_SCHEME'];
     $this->ip = $ip;
     $this->port = $port;
     $this->secure = $secure;
@@ -169,6 +175,15 @@ class ProxyManager {
 
   private function prepareRequest($ch) {
     $reqHeaders = getallheaders();
+
+    if($this->debug) {
+      $statusline = (strtolower($_SERVER['REQUEST_METHOD']) == 'post' ? 'POST ' : 'GET ') . $_SERVER['REQUEST_URI'] . ' HTTP/1.1';
+      $originalHeaders = array();
+      foreach($reqHeaders as $header => $value) {
+        $originalHeaders []= "$header: $value";
+      }
+      file_put_contents("{$this->logTime}.request-outer", $statusline . "\n" . implode("\n",$originalHeaders) . "\n\n" . file_get_contents("php://input"));
+    }
 
     curl_setopt($ch, CURLOPT_SAFE_UPLOAD, true);
     if(strtolower($_SERVER['REQUEST_METHOD']) == 'post') {
@@ -190,7 +205,7 @@ class ProxyManager {
       }
 
       if(!in_array($header, $this->preserved_request_headers)) {
-        $value = preg_replace($this->preg_newhost,$this->oldhost, $value);
+        $value = preg_replace_callback($this->preg_newhost, array($this,'replaceInRequest'), $value);
       }
 
       $headers []= "$header: $value";
@@ -207,7 +222,7 @@ class ProxyManager {
 
     if($this->debug) {
       $statusline = (strtolower($_SERVER['REQUEST_METHOD']) == 'post' ? 'POST ' : 'GET ') . $_SERVER['REQUEST_URI'] . ' HTTP/1.1';
-      file_put_contents("{$this->logTime}.request", $statusline . "\n" . implode("\n",$headers) . "\n\n" . $post);
+      file_put_contents("{$this->logTime}.request-inner", $statusline . "\n" . implode("\n",$headers) . "\n\n" . $post);
     }
   }
 
@@ -216,7 +231,7 @@ class ProxyManager {
 
     if(empty($data)) throw new Exception(curl_error($ch));
 
-    if($this->debug) file_put_contents("{$this->logTime}.response", $data);
+    if($this->debug) file_put_contents("{$this->logTime}.response-inner", $data);
 
     curl_close($ch);
 
@@ -244,7 +259,7 @@ class ProxyManager {
 
         if(!in_array($hdr, $this->no_send_headers)) {
           if(!in_array($hdr, $this->preserved_response_headers)) {
-            $val = preg_replace($this->preg_oldhost,$this->newhost, $val);
+            $val = preg_replace_callback($this->preg_oldhost, array($this,'replaceInResponse'), $val);
           }
 
           $headers []= array('name'=>$hdr, 'value'=>$val);
@@ -260,7 +275,7 @@ class ProxyManager {
 
     // replace in html / css / js / etc. response content
     if($this->handled_mimes === 'all' || in_array($mime, $this->handled_mimes)) {
-      $contents = preg_replace($this->preg_oldhost,$this->newhost,$contents);
+      $contents = preg_replace_callback($this->preg_oldhost, array($this,'replaceInResponse'), $contents);
     }
 
     $this->statusline = $statusheader;
@@ -268,20 +283,43 @@ class ProxyManager {
     $this->contents = $contents;
 
     $this->mimetype = $mime;
+
+    if($this->debug) {
+      $outputHeaders = '';
+      foreach($headers as $header) {
+        $outputHeaders .= $header['name'] . ': ' . $header['value'] . "\n";
+      }
+      file_put_contents("{$this->logTime}.response-outer", $statusheader . "\n" . $outputHeaders . "\n\n" . $contents);
+    }
+  }
+
+  private function replaceInRequest($matches) {
+    if(isset($matches[1])) {
+      return $this->oldscheme . '://' . $this->oldhost;
+    } else {
+      return $this->oldhost;
+    }
+  }
+  private function replaceInResponse($matches) {
+    if(isset($matches[1])) {
+      return $this->newscheme . '://' . $this->newhost;
+    } else {
+      return $this->newhost;
+    }
   }
 
   private function processPostVar($key,$value,$cb,$first=true) {
-    if($first) $key = preg_replace($this->preg_newhost,$this->oldhost,$key);
+    if($first) $key = preg_replace_callback($this->preg_newhost, array($this,'replaceInRequest'), $key);
     $data = '';
 
     if(is_array($value)) {
       foreach($value as $k => $v) {
-        $k = preg_replace($this->preg_newhost,$this->oldhost,$k);
+        $k = preg_replace_callback($this->preg_newhost, array($this,'replaceInRequest'), $k);
         $newkey = "{$key}[$k]";
         $data .= $this->processPostVar($newkey,$v,$cb,false);
       }
     } else {
-      $value = preg_replace($this->preg_newhost,$this->oldhost,$value);
+      $value = preg_replace_callback($this->preg_newhost, array($this,'replaceInRequest'), $value);
       $data = call_user_func($cb,$key,$value);
     }
 
@@ -317,12 +355,12 @@ class ProxyManager {
       $this->boundary = $boundary;
       $post = '';
       foreach($_POST as $key => $value) {
-        $post .= $this->processPostVar($key,$value,array($this,'multipartField'));
+        $post .= $this->processPostVar($key, $value, array($this,'multipartField'));
       }
 
       foreach($_FILES as $key => $file) {
         $name = $file['name'];
-        $key = preg_replace($this->preg_newhost,$this->oldhost,$key);
+        $key = preg_replace_callback($this->preg_newhost, array($this,'replaceInRequest'), $key);
         $key = preg_replace('/[\\r\\n"]/', '', $key); // not sure if these chars can be escaped
         $name = preg_replace('/[\\r\\n"]/', '', $name); // not sure if these chars can be escaped
         $data = file_get_contents($file['tmp_name']);
@@ -358,11 +396,7 @@ class ProxyManager {
 
     try {
 
-      $scheme = $this->secure === null ? $_SERVER['REQUEST_SCHEME'] : (
-        $this->secure === true ? 'https' : 'http'
-      );
-
-      $url = $scheme . '://' . $this->oldhost . $_SERVER['REQUEST_URI'];
+      $url = $this->oldscheme . '://' . $this->oldhost . $_SERVER['REQUEST_URI'];
       $ch = curl_init($url);
       $this->prepareRequest($ch);
       $this->prepareResponse($ch);
