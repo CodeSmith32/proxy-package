@@ -2,7 +2,7 @@
 /**
   ProxyManager - matches what http://hosts.cx does
 
-  Version 2.2.0
+  Version 2.2.1
 
   Helpful resource: http://github.com/cowboy/php-simple-proxy/raw/master/ba-simple-proxy.php
 **/
@@ -14,6 +14,7 @@ class ProxyManager {
   private $preg_newhost = null;
   private $ip = null;
   private $port = null;
+  private $secure = null;
   private $logTime = '<unknown>';
 
   private $debug = false; // logs full request-response data sent to/from the true server
@@ -144,14 +145,17 @@ class ProxyManager {
     $newhost = $params['newhost'];
     $ip      = $params['ip'];
     $port    = isset($params['port']) ? $params['port'] : 80;
+    $secure  = isset($params['secure']) ? $params['secure'] : null;
     $debug   = !empty($params['debug']);
     if(isset($params['handled_mimes']) && (is_array($params['handled_mimes']) || $params['handled_mimes'] === 'all'))
       $this->handled_mimes = $params['handled_mimes'];
 
-    if(preg_match('/[^\w\.-]/',$oldhost) === 1)
+    if(preg_match('/[^\w\.-]/',$oldhost) === 1) {
       throw new Exception('Old host has invalid characters');
-    if(preg_match('/[^\w\.-]/',$newhost) === 1)
+    }
+    if(preg_match('/[^\w\.-]/',$newhost) === 1) {
       throw new Exception('New host has invalid characters');
+    }
 
     $this->oldhost = $oldhost;
     $this->preg_oldhost = '%'.preg_quote($oldhost,'%').'%i';
@@ -159,6 +163,7 @@ class ProxyManager {
     $this->preg_newhost = '%'.preg_quote($newhost,'%').'%i';
     $this->ip = $ip;
     $this->port = $port;
+    $this->secure = $secure;
     $this->debug = $debug;
   }
 
@@ -180,11 +185,13 @@ class ProxyManager {
     foreach($reqHeaders as $header => $value) {
       $header = strtolower($header);
 
-      if(in_array($header, $this->no_send_headers))
+      if(in_array($header, $this->no_send_headers)) {
         continue;
+      }
 
-      if(!in_array($header, $this->preserved_request_headers))
+      if(!in_array($header, $this->preserved_request_headers)) {
         $value = preg_replace($this->preg_newhost,$this->oldhost, $value);
+      }
 
       $headers []= "$header: $value";
     }
@@ -207,8 +214,7 @@ class ProxyManager {
   private function prepareResponse($ch) {
     $data = curl_exec($ch);
 
-    if(empty($data))
-      throw new Exception(curl_error($ch));
+    if(empty($data)) throw new Exception(curl_error($ch));
 
     if($this->debug) file_put_contents("{$this->logTime}.response", $data);
 
@@ -237,21 +243,25 @@ class ProxyManager {
         $hdr = strtolower($hdr);
 
         if(!in_array($hdr, $this->no_send_headers)) {
-          if(!in_array($hdr, $this->preserved_response_headers))
+          if(!in_array($hdr, $this->preserved_response_headers)) {
             $val = preg_replace($this->preg_oldhost,$this->newhost, $val);
+          }
 
           $headers []= array('name'=>$hdr, 'value'=>$val);
         }
 
-        if($hdr == 'content-type' && preg_match('%^(.*?)(?:;|\\s|$)%',$val,$m)===1)
+        if($hdr == 'content-type' && preg_match('%^(.*?)(?:;|\\s|$)%',$val,$m)===1) {
           $mime = $m[1];
+        }
 
-      } else if(preg_match('/^HTTP/',$header))
+      } else if(preg_match('/^HTTP/',$header)) {
         $statusheader = $header;
+      }
 
     // replace in html / css / js / etc. response content
-    if($this->handled_mimes === 'all' || in_array($mime, $this->handled_mimes))
+    if($this->handled_mimes === 'all' || in_array($mime, $this->handled_mimes)) {
       $contents = preg_replace($this->preg_oldhost,$this->newhost,$contents);
+    }
 
     $this->statusline = $statusheader;
     $this->headers = $headers;
@@ -348,7 +358,11 @@ class ProxyManager {
 
     try {
 
-      $url = $_SERVER['REQUEST_SCHEME'] . '://' . $this->oldhost . $_SERVER['REQUEST_URI'];
+      $scheme = $this->secure === null ? $_SERVER['REQUEST_SCHEME'] : (
+        $this->secure === true ? 'https' : 'http'
+      );
+
+      $url = $scheme . '://' . $this->oldhost . $_SERVER['REQUEST_URI'];
       $ch = curl_init($url);
       $this->prepareRequest($ch);
       $this->prepareResponse($ch);
@@ -377,8 +391,9 @@ class ProxyManager {
   function push() {
     header($this->statusline);
 
-    foreach($this->headers as $header)
+    foreach($this->headers as $header) {
       header($header['name'].': '.$header['value'], false);
+    }
 
     echo $this->contents;
   }
