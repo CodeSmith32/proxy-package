@@ -2,7 +2,7 @@
 /**
   ProxyManager - matches what http://hosts.cx does
 
-  Version 2.2.3
+  Version 2.2.4
 
   Helpful resource: http://github.com/cowboy/php-simple-proxy/raw/master/ba-simple-proxy.php
 **/
@@ -11,6 +11,7 @@ class ProxyManager {
   private $oldhost = null;
   private $preg_oldhost = null;
   private $oldscheme = null;
+  private $preg_oldscheme = null;
   private $newhost = null;
   private $preg_newhost = null;
   private $newscheme = null;
@@ -162,10 +163,11 @@ class ProxyManager {
     }
 
     $this->oldhost = $oldhost;
-    $this->preg_oldhost = '%(?:(https?)://)?'.preg_quote($oldhost,'%').'%i';
+    $this->preg_oldhost = '%(?:(https?)://)?' . preg_quote($oldhost,'%') . '%i';
     $this->oldscheme = $secure === null ? $_SERVER['REQUEST_SCHEME'] : ($secure === true ? 'https' : 'http');
+    $this->preg_oldscheme = '%' . preg_quote($this->oldscheme, '%') . '(:(?://|\\\\/\\\\/|\\%2F\\%2F)[a-z0-9-]+(?:\.[a-z0-9-]+)+)%i';
     $this->newhost = $newhost;
-    $this->preg_newhost = '%(?:(https?)://)?'.preg_quote($newhost,'%').'%i';
+    $this->preg_newhost = '%(?:(https?)://)?' . preg_quote($newhost, '%') . '%i';
     $this->newscheme = $_SERVER['REQUEST_SCHEME'];
     $this->ip = $ip;
     $this->port = $port;
@@ -177,12 +179,12 @@ class ProxyManager {
     $reqHeaders = getallheaders();
 
     if($this->debug) {
-      $statusline = (strtolower($_SERVER['REQUEST_METHOD']) == 'post' ? 'POST ' : 'GET ') . $_SERVER['REQUEST_URI'] . ' HTTP/1.1';
+      $statusline = $_SERVER['REQUEST_METHOD'] . ' ' . $_SERVER['REQUEST_URI'] . ' HTTP/1.1';
       $originalHeaders = array();
       foreach($reqHeaders as $header => $value) {
         $originalHeaders []= "$header: $value";
       }
-      file_put_contents("{$this->logTime}.request-outer", $statusline . "\n" . implode("\n",$originalHeaders) . "\n\n" . file_get_contents("php://input"));
+      file_put_contents("{$this->logTime}.request-outer", $statusline . "\n" . implode("\n", $originalHeaders) . "\n\n" . file_get_contents("php://input"));
     }
 
     curl_setopt($ch, CURLOPT_SAFE_UPLOAD, true);
@@ -191,6 +193,8 @@ class ProxyManager {
 
       curl_setopt($ch, CURLOPT_POST, true);
       curl_setopt($ch, CURLOPT_POSTFIELDS, $post);
+    } else if(strtolower($_SERVER['REQUEST_METHOD'] !== 'get')) {
+      curl_setopt($ch, CURLOPT_CUSTOMREQUEST, $_SERVER['REQUEST_METHOD']);
     }
 
     curl_setopt($ch, CURLOPT_USERAGENT, $_SERVER['HTTP_USER_AGENT']);
@@ -221,8 +225,8 @@ class ProxyManager {
     curl_setopt($ch, CURLOPT_FOLLOWLOCATION, false);
 
     if($this->debug) {
-      $statusline = (strtolower($_SERVER['REQUEST_METHOD']) == 'post' ? 'POST ' : 'GET ') . $_SERVER['REQUEST_URI'] . ' HTTP/1.1';
-      file_put_contents("{$this->logTime}.request-inner", $statusline . "\n" . implode("\n",$headers) . "\n\n" . $post);
+      $statusline = $_SERVER['REQUEST_METHOD'] . ' ' . $_SERVER['REQUEST_URI'] . ' HTTP/1.1';
+      file_put_contents("{$this->logTime}.request-inner", $statusline . "\n" . implode("\n", $headers) . "\n\n" . $post);
     }
   }
 
@@ -236,8 +240,8 @@ class ProxyManager {
     curl_close($ch);
 
     // get rid of 'continue' headers
-    $data = preg_replace('%^(http/[\d\.]+\\s*100\\s*continue\\r?\\n\\r?\\n)*%i','', $data);
-    list($header,$contents) = preg_split('/\\r?\\n\\r?\\n/',$data,2);
+    $data = preg_replace('%^(http/[\d\.]+\\s*100\\s*continue\\r?\\n\\r?\\n)*%i', '', $data);
+    list($header,$contents) = preg_split('/\\r?\\n\\r?\\n/', $data, 2);
 
     $this->originalContents = $contents;
 
@@ -254,7 +258,7 @@ class ProxyManager {
         $hdr = $matches[1];
         $val = $matches[2];
 
-        $originalHeaders []= array('name'=>$hdr, 'value'=>$val);
+        $originalHeaders []= array('name' => $hdr, 'value' => $val);
         $hdr = strtolower($hdr);
 
         if(!in_array($hdr, $this->no_send_headers)) {
@@ -262,10 +266,10 @@ class ProxyManager {
             $val = preg_replace_callback($this->preg_oldhost, array($this,'replaceInResponse'), $val);
           }
 
-          $headers []= array('name'=>$hdr, 'value'=>$val);
+          $headers []= array('name' => $hdr, 'value' => $val);
         }
 
-        if($hdr == 'content-type' && preg_match('%^(.*?)(?:;|\\s|$)%',$val,$m)===1) {
+        if($hdr === 'content-type' && preg_match('%^(.*?)(?:;|\\s|$)%',$val,$m) === 1) {
           $mime = $m[1];
         }
 
@@ -276,6 +280,10 @@ class ProxyManager {
     // replace in html / css / js / etc. response content
     if($this->handled_mimes === 'all' || in_array($mime, $this->handled_mimes)) {
       $contents = preg_replace_callback($this->preg_oldhost, array($this,'replaceInResponse'), $contents);
+
+      if($this->oldscheme !== $this->newscheme) {
+        $contents = preg_replace_callback($this->preg_oldscheme, array($this,'replaceSchemeInResponse'), $contents);
+      }
     }
 
     $this->statusline = $statusheader;
@@ -306,6 +314,9 @@ class ProxyManager {
     } else {
       return $this->newhost;
     }
+  }
+  private function replaceSchemeInResponse($matches) {
+    return $this->newscheme . $matches[1];
   }
 
   private function processPostVar($key,$value,$cb,$first=true) {
