@@ -2,7 +2,7 @@
 /**
   ProxyManager - matches what http://hosts.cx does
 
-  Version 2.2.4
+  Version 2.2.5
 
   Helpful resource: http://github.com/cowboy/php-simple-proxy/raw/master/ba-simple-proxy.php
 **/
@@ -316,6 +316,10 @@ class ProxyManager {
     }
   }
   private function replaceSchemeInResponse($matches) {
+    // prevent breaking namespace urls
+    if($this->oldscheme === 'http' && preg_match('%(\\%2F|/)www\\.w3\\.org$%', $matches[1]) === 1) {
+      return 'http' . $matches[1];
+    }
     return $this->newscheme . $matches[1];
   }
 
