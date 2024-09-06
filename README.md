@@ -94,6 +94,17 @@ The IP address of the target server.
 *Optional*
 The port to use to connect to the target server.
 
+* `'secure' => boolean | null`
+
+*Optional*
+If the target server uses SSL, optionally or exclusively.
+
+When set to `null` (default), the proxy will pass on the same connecting protocol to the target server. That is, if the client connects to the proxy over https, the proxy will connect to the target server over https. But if the client connects with http, the proxy connects to the target with http as well. No protocol replacements occur in this case.
+
+When set to `false`, the proxy expects the target server only supports http, but the proxy itself can be configured with SSL, and will properly replace https to http for outgoing traffic. Additionally, since http contents cannot be loaded on an https page, all http urls will be replaced with https, not just the target host. Therefore, it is necessary that resources also properly support https.
+
+When set to `true`, the proxy will connect to the target server over https, regardless of the protocol the client used connecting to the proxy. Since https contents can be loaded on an http page, no external resource protocol replacement is applied.
+
 * `'handled_mimes' => array(string, ...)|'all'`
 
 *Optional*
